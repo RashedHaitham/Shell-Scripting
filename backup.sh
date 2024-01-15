@@ -1,16 +1,15 @@
 #!/bin/bash
 
-
 # Define variables
-BACKUP_SRC=""  # Will be set based on user input
-BACKUP_DEST=""  # User-specified backup destination
+BACKUP_SRCS=()   # Array to store source directories
+BACKUP_DEST=""   # User-specified backup destination
 LOG_FILE="backup_log.txt"  # Log file location
 TIMESTAMP=$(date +"%Y%m%d%H%M%S")  # Timestamp for unique file naming
-COMPRESS_TYPE="gz"  # Default compression type, can be overridden by user
+COMPRESS_TYPE=""  # Default is no compression, can be overridden by user
 
 # Function to print usage information
 print_usage() {
-    echo "Usage: $0 -s [source directories] -d [destination directory] -c [compression type]"
+    echo "Usage: $0 -s [source directories] -d [destination directory] [-c compression type]"
     echo "Available compression types: gz, bz2, xz, zip, tar, 7z, rar, zst, lz"
     exit 1
 }
@@ -28,7 +27,7 @@ check_directory() {
 while getopts s:d:c: flag 
 do
     case "${flag}" in
-        s) BACKUP_SRC=${OPTARG};;  # Source directory
+        s) IFS=',' read -ra BACKUP_SRCS <<< "${OPTARG}";;  # Source directories as comma-separated values
         d) BACKUP_DEST=${OPTARG};;  # Destination directory
         c) COMPRESS_TYPE=${OPTARG};;  # Compression type
         *) print_usage;;
@@ -36,56 +35,76 @@ do
 done
 
 # Ensure all parameters are provided
-if [ -z "$BACKUP_SRC" ] || [ -z "$BACKUP_DEST" ] || [ -z "$COMPRESS_TYPE" ]; then
+if [ -z "${BACKUP_SRCS[*]}" ] || [ -z "$BACKUP_DEST" ]; then
     echo "Error: Missing parameters." | tee -a $LOG_FILE
     print_usage
 fi
 
 # Validate input directories
-check_directory "$BACKUP_SRC"
+for dir in "${BACKUP_SRCS[@]}"; do
+    check_directory "$dir"
+done
 
- # Check if the destination directory exists; if not, create it
+# Check if the destination directory exists; if not, create it
 if [ ! -d "$BACKUP_DEST" ]; then
     mkdir -p "$BACKUP_DEST"
     echo "The destination backup path was not found, so it was created." | tee -a "$LOG_FILE"
 fi
- 
- #check_directory "$BACKUP_DEST"
 
+#check_directory "$BACKUP_DEST"
 
-# Define backup file name with the source directory name, timestamp, and compression type
-BACKUP_FILE="$BACKUP_DEST/backup_$(basename $BACKUP_SRC)_$TIMESTAMP.$COMPRESS_TYPE"
+# Define backup file name with the source directory names, timestamp, and compression type
+BACKUP_FILE="$BACKUP_DEST/backup_$(IFS=_; echo "${BACKUP_SRCS[*]}")_$TIMESTAMP"
+if [ -n "$COMPRESS_TYPE" ]; then
+    BACKUP_FILE="$BACKUP_FILE.$COMPRESS_TYPE"
+fi
 
 # Function to perform backup
 perform_backup() {
-    echo "Starting backup of $BACKUP_SRC to $BACKUP_FILE" | tee -a "$LOG_FILE"
+    echo "Starting backup of ${BACKUP_SRCS[*]} to $BACKUP_FILE" | tee -a "$LOG_FILE"
 
     # Choose compression command based on the user-specified compression type
-    case $COMPRESS_TYPE in
-        gz) tar -czf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        bz2) tar -cjf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        xz) tar -cJf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        zip) zip -r "$BACKUP_FILE" "$BACKUP_SRC";;
-        tar) tar -cf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        7z) 7z a "$BACKUP_FILE" "$BACKUP_SRC";;
-        rar) rar a "$BACKUP_FILE" "$BACKUP_SRC";;
-        zst) tar --zstd -cf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        lz) tar --lzip -cf "$BACKUP_FILE" -C "$(dirname "$BACKUP_SRC")" "$(basename "$BACKUP_SRC")";;
-        *) echo "Unsupported compression type: $COMPRESS_TYPE" | tee -a "$LOG_FILE"; exit 1;;
-    esac
+    if [ -n "$COMPRESS_TYPE" ]; then
+        case $COMPRESS_TYPE in
+            gz) tar -czf "$BACKUP_FILE.tar.gz" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            bz2) tar -cjf "$BACKUP_FILE.tar.bz2" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            xz) tar -cJf "$BACKUP_FILE.tar.xz" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            zip) zip -r "$BACKUP_FILE.zip" "${BACKUP_SRCS[@]}";;
+            tar) tar -cf "$BACKUP_FILE.tar" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            7z) 7z a "$BACKUP_FILE.7z" "${BACKUP_SRCS[@]}";;
+            rar) rar a "$BACKUP_FILE.rar" "${BACKUP_SRCS[@]}";;
+            zst) tar --zstd -cf "$BACKUP_FILE.tar.zst" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            lz) tar --lzip -cf "$BACKUP_FILE.tar.lz" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}";;
+            *) echo "Unsupported compression type: $COMPRESS_TYPE" | tee -a "$LOG_FILE"; exit 1;;
+        esac
+    else
+        #tar -cf "$BACKUP_FILE.tar" -C "$(dirname "${BACKUP_SRCS[0]}")" "${BACKUP_SRCS[@]##*/}"
+        cp -r "${BACKUP_SRCS[@]}" "$BACKUP_DEST"
+    fi
 
     # Check if backup was successful
-    if [ $? -eq 0 ]; then
-        echo "Backup completed successfully." | tee -a "$LOG_FILE"
-        local size
-        size=$(du -sh "$BACKUP_FILE" | cut -f1)
-        echo "Backup file size: $size" | tee -a "$LOG_FILE"
+
+if [ $? -eq 0 ]; then
+    echo "Backup completed successfully." | tee -a "$LOG_FILE"
+    
+    # Determine the backup file(s) for calculating size
+    if [ -n "$COMPRESS_TYPE" ]; then
+        backup_files=("$BACKUP_FILE"*)
     else
-        echo "Backup failed. Check log file $LOG_FILE for errors." | tee -a "$LOG_FILE"
-        exit 1
+        backup_files=("${BACKUP_SRCS[@]##*/}")
     fi
+    
+    local size
+    size=$(du -sh "${backup_files[@]}" | cut -f1)
+    echo "Backup file size: $size"| tee -a "$LOG_FILE"
+else
+    echo "Backup failed. Check log file $LOG_FILE for errors." | tee -a "$LOG_FILE"
+    exit 1
+fi
+
+
 }
 
 # Perform the backup
-perform_backup "$BACKUP_SRC" "$BACKUP_DEST" "$COMPRESS_TYPE"
+perform_backup "${BACKUP_SRCS[@]}" "$BACKUP_DEST" "$COMPRESS_TYPE"
 
